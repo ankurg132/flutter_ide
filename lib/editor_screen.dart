@@ -1,18 +1,31 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_monaco/flutter_monaco.dart';
 import 'package:path/path.dart' as p;
+import 'package:webview_flutter/webview_flutter.dart';
 import 'models/file_system_entity.dart';
 import 'services/file_service.dart';
 import 'file_tree.dart';
 import 'flutter_sidebar.dart';
 import 'output_panel.dart';
+import 'pubdev_sidebar.dart';
 
 class EditorScreen extends StatefulWidget {
   const EditorScreen({super.key});
 
   @override
   State<EditorScreen> createState() => _EditorScreenState();
+}
+
+// Model for web tabs
+class WebTab {
+  final String title;
+  final String url;
+
+  WebTab({required this.title, required this.url});
 }
 
 class _EditorScreenState extends State<EditorScreen> {
@@ -23,8 +36,22 @@ class _EditorScreenState extends State<EditorScreen> {
   String _currentCode = '// Open a file to start editing\n';
   int _selectedActivityIndex = 0;
 
+  // Web tabs state
+  final List<WebTab> _webTabs = [];
+  WebTab? _activeWebTab;
+  final Map<String, WebViewController> _webViewControllers = {};
+
   // Output panel state
   bool _isOutputVisible = false;
+
+  // Terminal command to run
+  String? _pendingCommand;
+
+  // File watchers for detecting external changes
+  final Map<String, StreamSubscription<FileSystemEvent>> _fileWatchers = {};
+
+  // Track files we recently saved to avoid reloading from our own changes
+  final Set<String> _recentlySavedFiles = {};
 
   @override
   void initState() {
@@ -32,10 +59,123 @@ class _EditorScreenState extends State<EditorScreen> {
     HardwareKeyboard.instance.addHandler(_handleGlobalKeyEvent);
   }
 
+  WebViewController _getOrCreateWebViewController(String url) {
+    if (!_webViewControllers.containsKey(url)) {
+      var hasCompletedInitialLoad = false;
+
+      final controller = WebViewController()
+        ..setJavaScriptMode(JavaScriptMode.unrestricted)
+        ..setNavigationDelegate(
+          NavigationDelegate(
+            onPageFinished: (String url) {
+              hasCompletedInitialLoad = true;
+            },
+            onNavigationRequest: (NavigationRequest request) {
+              // Allow initial page load and redirects during load
+              if (!hasCompletedInitialLoad) {
+                return NavigationDecision.navigate;
+              }
+
+              // After initial load, open all navigations in new tabs
+              _openWebTab(_getTitleFromUrl(request.url), request.url);
+              return NavigationDecision.prevent;
+            },
+          ),
+        )
+        ..loadRequest(Uri.parse(url));
+      _webViewControllers[url] = controller;
+    }
+    return _webViewControllers[url]!;
+  }
+
+  String _getTitleFromUrl(String url) {
+    try {
+      final uri = Uri.parse(url);
+      // Extract a readable title from the URL
+      if (uri.host.contains('github.com')) {
+        final parts = uri.pathSegments;
+        if (parts.length >= 2) {
+          return '${parts[0]}/${parts[1]}';
+        }
+      }
+      if (uri.host.contains('pub.dev')) {
+        final parts = uri.pathSegments;
+        if (parts.isNotEmpty && parts[0] == 'packages' && parts.length >= 2) {
+          return parts[1];
+        }
+      }
+      return uri.host;
+    } catch (e) {
+      return url;
+    }
+  }
+
   @override
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_handleGlobalKeyEvent);
+    // Clean up all file watchers
+    for (final subscription in _fileWatchers.values) {
+      subscription.cancel();
+    }
+    _fileWatchers.clear();
     super.dispose();
+  }
+
+  void _watchFile(FileNodeFile file) {
+    // Cancel existing watcher for this file
+    _fileWatchers[file.path]?.cancel();
+
+    try {
+      final fileEntity = File(file.path);
+      final subscription = fileEntity.watch(events: FileSystemEvent.modify).listen(
+        (event) {
+          if (event.type == FileSystemEvent.modify) {
+            // Skip reload if we recently saved this file ourselves
+            if (_recentlySavedFiles.contains(file.path)) {
+              return;
+            }
+            _reloadFileContent(file);
+          }
+        },
+        onError: (error) {
+          // File watching failed, ignore silently
+        },
+      );
+      _fileWatchers[file.path] = subscription;
+    } catch (e) {
+      // File watching not supported or failed
+    }
+  }
+
+  Future<void> _reloadFileContent(FileNodeFile file) async {
+    try {
+      final content = await fileService.readFile(file);
+      if (content != null && mounted) {
+        // Only update if this is the active file
+        if (file.path == _activeFile?.path) {
+          setState(() {
+            _currentCode = content;
+          });
+          _editorController?.setValue(content);
+
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('${file.name} was modified externally and reloaded'),
+                duration: const Duration(seconds: 2),
+              ),
+            );
+          }
+        }
+      }
+    } catch (e) {
+      // Failed to reload file
+    }
+  }
+
+  void _stopWatchingFile(String path) {
+    _fileWatchers[path]?.cancel();
+    _fileWatchers.remove(path);
   }
 
   bool _handleGlobalKeyEvent(KeyEvent event) {
@@ -135,9 +275,20 @@ class _EditorScreenState extends State<EditorScreen> {
           final content = await _editorController!.getValue();
 
           if (content != _currentCode) {
+            // Don't save if content became empty but wasn't before (prevents accidental data loss)
+            if (content.trim().isEmpty && _currentCode.trim().isNotEmpty) {
+              // Skip saving empty content - likely a glitch
+              return true; // Continue polling
+            }
             _currentCode = content;
+            // Mark as recently saved to prevent file watcher from reloading
+            final filePath = _activeFile!.path;
+            _recentlySavedFiles.add(filePath);
             await fileService.saveFile(_activeFile!, content);
-            // Auto-saved
+            // Remove from recently saved after a short delay
+            Future.delayed(const Duration(milliseconds: 500), () {
+              _recentlySavedFiles.remove(filePath);
+            });
           }
         } catch (e) {
           // debugPrint('Auto-save error: $e');
@@ -164,6 +315,49 @@ class _EditorScreenState extends State<EditorScreen> {
       // Go to definition failed
     }
     */
+  }
+
+  void _openWebTab(String title, String url) {
+    // Check if tab already exists
+    final existingTab = _webTabs.where((t) => t.url == url).firstOrNull;
+    if (existingTab != null) {
+      setState(() {
+        _activeWebTab = existingTab;
+        _activeFile = null;
+      });
+      return;
+    }
+
+    final newTab = WebTab(title: title, url: url);
+    setState(() {
+      _webTabs.add(newTab);
+      _activeWebTab = newTab;
+      _activeFile = null;
+    });
+  }
+
+  void _closeWebTab(WebTab tab) {
+    setState(() {
+      _webTabs.remove(tab);
+      _webViewControllers.remove(tab.url);
+      if (_activeWebTab == tab) {
+        if (_webTabs.isNotEmpty) {
+          _activeWebTab = _webTabs.last;
+        } else if (_openFiles.isNotEmpty) {
+          _activeWebTab = null;
+          _activeFile = _openFiles.last;
+        } else {
+          _activeWebTab = null;
+        }
+      }
+    });
+  }
+
+  void _runTerminalCommand(String command) {
+    setState(() {
+      _isOutputVisible = true;
+      _pendingCommand = command;
+    });
   }
 
   void _showTerminal() {
@@ -359,6 +553,8 @@ class _EditorScreenState extends State<EditorScreen> {
       setState(() {
         _openFiles.add(file);
       });
+      // Start watching this file for external changes
+      _watchFile(file);
     }
 
     // Set active even if already open
@@ -389,6 +585,9 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   void _closeFile(FileNodeFile file) {
+    // Stop watching this file
+    _stopWatchingFile(file.path);
+
     setState(() {
       _openFiles.removeWhere((f) => f.path == file.path);
       if (_activeFile?.path == file.path) {
@@ -452,6 +651,11 @@ class _EditorScreenState extends State<EditorScreen> {
                     onFileSelected: _openFile,
                     onPickDirectory: _pickDirectory,
                   ),
+                if (_selectedActivityIndex == 2)
+                  PubDevSidebar(
+                    onOpenInBrowser: _openWebTab,
+                    onRunCommand: _runTerminalCommand,
+                  ),
 
                 // Main Editor Area
                 Expanded(
@@ -461,19 +665,27 @@ class _EditorScreenState extends State<EditorScreen> {
                       _buildTabBar(),
 
                       // Breadcrumbs
-                      if (_activeFile != null) _buildBreadcrumbs(),
+                      if (_activeFile != null && _activeWebTab == null) _buildBreadcrumbs(),
 
-                      // Editor or Welcome Screen
+                      // Editor, WebView, or Welcome Screen
                       Expanded(
-                        child: _activeFile == null
-                            ? _buildWelcomeScreen()
-                            : _buildEditor(),
+                        child: _activeWebTab != null
+                            ? _buildWebView()
+                            : _activeFile == null
+                                ? _buildWelcomeScreen()
+                                : _buildEditor(),
                       ),
 
                       // Output Panel (Terminal)
                       OutputPanel(
                         isVisible: _isOutputVisible,
                         workingDirectory: _rootNode?.path,
+                        initialCommand: _pendingCommand,
+                        onCommandExecuted: () {
+                          setState(() {
+                            _pendingCommand = null;
+                          });
+                        },
                       ),
                     ],
                   ),
@@ -493,6 +705,7 @@ class _EditorScreenState extends State<EditorScreen> {
     final activities = [
       (Icons.insert_drive_file_outlined, 'Explorer'),
       (Icons.explore, 'Flutter explorer'),
+      (Icons.inventory_2_outlined, 'Pub.dev Packages'),
     ];
 
     return Container(
@@ -617,14 +830,20 @@ class _EditorScreenState extends State<EditorScreen> {
       child: Row(
         children: [
           Expanded(
-            child: ListView.builder(
+            child: ListView(
               scrollDirection: Axis.horizontal,
-              itemCount: _openFiles.length,
-              itemBuilder: (context, index) {
-                final file = _openFiles[index];
-                final isActive = file.path == _activeFile?.path;
-                return _buildTab(file, isActive);
-              },
+              children: [
+                // File tabs
+                ..._openFiles.map((file) {
+                  final isActive = file.path == _activeFile?.path && _activeWebTab == null;
+                  return _buildTab(file, isActive);
+                }),
+                // Web tabs
+                ..._webTabs.map((webTab) {
+                  final isActive = webTab == _activeWebTab;
+                  return _buildWebTab(webTab, isActive);
+                }),
+              ],
             ),
           ),
 
@@ -801,6 +1020,52 @@ class _EditorScreenState extends State<EditorScreen> {
     );
   }
 
+  Widget _buildWebView() {
+    if (_activeWebTab == null) return const SizedBox.shrink();
+
+    return Container(
+      color: const Color(0xFF1E1E1E),
+      child: Column(
+        children: [
+          // URL bar
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            color: const Color(0xFF252526),
+            child: Row(
+              children: [
+                const Icon(Icons.public, size: 16, color: Colors.white54),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF3C3C3C),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      _activeWebTab!.url,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // WebView content
+          Expanded(
+            child: WebViewWidget(
+              controller: _getOrCreateWebViewController(_activeWebTab!.url),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildStatusBar() {
     final language = _activeFile != null
         ? _getLanguage(_activeFile!.path).name
@@ -829,9 +1094,28 @@ class _EditorScreenState extends State<EditorScreen> {
     return _EditorTab(
       file: file,
       isActive: isActive,
-      onTap: () => _openFile(file),
+      onTap: () {
+        setState(() {
+          _activeWebTab = null;
+        });
+        _openFile(file);
+      },
       onClose: () => _closeFile(file),
       icon: _getFileIcon(file.name),
+    );
+  }
+
+  Widget _buildWebTab(WebTab webTab, bool isActive) {
+    return _WebEditorTab(
+      webTab: webTab,
+      isActive: isActive,
+      onTap: () {
+        setState(() {
+          _activeWebTab = webTab;
+          _activeFile = null;
+        });
+      },
+      onClose: () => _closeWebTab(webTab),
     );
   }
 
@@ -1220,6 +1504,97 @@ class _EditorTabState extends State<_EditorTab> {
               Expanded(
                 child: Text(
                   widget.file.name,
+                  style: TextStyle(
+                    color: widget.isActive || _isHovered
+                        ? Colors.white
+                        : Colors.white54,
+                    fontSize: 13,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 4),
+              MouseRegion(
+                onEnter: (_) => setState(() => _isCloseHovered = true),
+                onExit: (_) => setState(() => _isCloseHovered = false),
+                child: GestureDetector(
+                  onTap: widget.onClose,
+                  child: Container(
+                    padding: const EdgeInsets.all(2),
+                    decoration: BoxDecoration(
+                      color: _isCloseHovered ? const Color(0x33FFFFFF) : null,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Icon(
+                      Icons.close,
+                      size: 14,
+                      color: _isHovered || widget.isActive
+                          ? Colors.white70
+                          : Colors.transparent,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// Web Tab Widget
+class _WebEditorTab extends StatefulWidget {
+  final WebTab webTab;
+  final bool isActive;
+  final VoidCallback onTap;
+  final VoidCallback onClose;
+
+  const _WebEditorTab({
+    required this.webTab,
+    required this.isActive,
+    required this.onTap,
+    required this.onClose,
+  });
+
+  @override
+  State<_WebEditorTab> createState() => _WebEditorTabState();
+}
+
+class _WebEditorTabState extends State<_WebEditorTab> {
+  bool _isHovered = false;
+  bool _isCloseHovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      onEnter: (_) => setState(() => _isHovered = true),
+      onExit: (_) => setState(() => _isHovered = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: Container(
+          padding: const EdgeInsets.only(left: 10, right: 4),
+          constraints: const BoxConstraints(minWidth: 120, maxWidth: 200),
+          decoration: BoxDecoration(
+            color: widget.isActive
+                ? const Color(0xFF1E1E1E)
+                : _isHovered
+                ? const Color(0xFF2D2D2D)
+                : const Color(0xFF252526),
+            border: widget.isActive
+                ? const Border(
+                    top: BorderSide(color: Color(0xFF007ACC), width: 2),
+                  )
+                : null,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.public, size: 14, color: Color(0xFF42A5F5)),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  widget.webTab.title,
                   style: TextStyle(
                     color: widget.isActive || _isHovered
                         ? Colors.white

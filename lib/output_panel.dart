@@ -8,11 +8,15 @@ import 'package:xterm/xterm.dart';
 class OutputPanel extends StatefulWidget {
   final bool isVisible;
   final String? workingDirectory;
+  final String? initialCommand;
+  final VoidCallback? onCommandExecuted;
 
   const OutputPanel({
     super.key,
     required this.isVisible,
     this.workingDirectory,
+    this.initialCommand,
+    this.onCommandExecuted,
   });
 
   @override
@@ -56,6 +60,29 @@ class _OutputPanelState extends State<OutputPanel> {
         widget.isVisible) {
       _restartPty();
     }
+    // Run initial command if provided
+    if (widget.initialCommand != null &&
+        widget.initialCommand != oldWidget.initialCommand) {
+      _runCommand(widget.initialCommand!);
+    }
+  }
+
+  void _runCommand(String command) {
+    // Always defer to avoid setState during build
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (pty == null) {
+        // PTY not ready yet, try again next frame
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (pty != null && mounted) {
+            pty!.write(Uint8List.fromList(utf8.encode('$command\n')));
+            widget.onCommandExecuted?.call();
+          }
+        });
+      } else {
+        pty!.write(Uint8List.fromList(utf8.encode('$command\n')));
+        widget.onCommandExecuted?.call();
+      }
+    });
   }
 
   void _startPty() {
@@ -144,15 +171,10 @@ class _OutputPanelState extends State<OutputPanel> {
                 ),
                 const Spacer(),
                 _TerminalHeaderButton(
-                  icon: Icons.refresh,
-                  tooltip: 'Restart Terminal',
-                  onPressed: _restartPty,
-                ),
-                _TerminalHeaderButton(
                   icon: Icons.delete_outline,
                   tooltip: 'Clear',
                   onPressed: () {
-                    terminal.buffer.clear();
+                    pty?.write(Uint8List.fromList(utf8.encode("clear\n")));
                   },
                 ),
               ],
