@@ -214,6 +214,9 @@ runTerminalCommand('dart analyze');
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
+<h3 align="left">Support:</h3>
+<p><a href="https://www.buymeacoffee.com/ankurg132" target="blank"> <img align="left" src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" height="50" width="210" alt="ankurg132" /></a></p><br><br>
+
 ## License
 
 This project is open source and available under the MIT License.
