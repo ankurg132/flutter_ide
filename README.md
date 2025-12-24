@@ -63,11 +63,6 @@ The editor features:
 
 ## Getting Started
 
-### Prerequisites
-
-- Flutter SDK ^3.10.1
-- Dart SDK ^3.10.1
-
 ### Installation
 
 1. Clone the repository:
