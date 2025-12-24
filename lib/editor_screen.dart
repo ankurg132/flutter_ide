@@ -7,11 +7,18 @@ import 'package:flutter_monaco/flutter_monaco.dart';
 import 'package:path/path.dart' as p;
 import 'package:webview_flutter/webview_flutter.dart';
 import 'models/file_system_entity.dart';
+import 'models/web_tab.dart';
 import 'services/file_service.dart';
 import 'file_tree.dart';
 import 'flutter_sidebar.dart';
 import 'output_panel.dart';
 import 'pubdev_sidebar.dart';
+import 'widgets/editor/activity_bar.dart';
+import 'widgets/editor/editor_tabs.dart';
+import 'widgets/editor/status_bar.dart';
+import 'widgets/editor/welcome_screen.dart';
+import 'widgets/editor/quick_open_dialog.dart';
+import 'widgets/editor/resize_handles.dart';
 
 // Global function to run terminal commands from anywhere
 void Function(String command)? _globalRunTerminalCommand;
@@ -26,14 +33,6 @@ class EditorScreen extends StatefulWidget {
 
   @override
   State<EditorScreen> createState() => _EditorScreenState();
-}
-
-// Model for web tabs
-class WebTab {
-  final String title;
-  final String url;
-
-  WebTab({required this.title, required this.url});
 }
 
 class _EditorScreenState extends State<EditorScreen> {
@@ -217,9 +216,6 @@ class _EditorScreenState extends State<EditorScreen> {
     if (root != null) {
       setState(() {
         _rootNode = root;
-        // Optionally close existing files or keep them?
-        // _openFiles.clear();
-        // _activeFile = null;
       });
     }
   }
@@ -237,8 +233,6 @@ class _EditorScreenState extends State<EditorScreen> {
     if (newFile != null) {
       setState(() {
         targetDir.children.add(newFile);
-        // Force rebuild of tree might be needed if children list isn't observable
-        // But setState should trigger widget rebuild.
       });
       await _openFile(newFile);
     }
@@ -260,9 +254,6 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   void _startAutoSave() {
-    // Poll for changes every 2 seconds
-    // Since 'onChange' is not available in this wrapper, we must fetch the code manually.
-
     Future.doWhile(() async {
       if (!mounted) return false;
       await Future.delayed(const Duration(seconds: 2));
@@ -270,30 +261,11 @@ class _EditorScreenState extends State<EditorScreen> {
 
       if (_activeFile != null && _editorController != null) {
         try {
-          // We can't rely on _currentCode being up to date if there's no listener.
-          // So we ask the controller for the value.
-          // NOTE: getValue() might be asynchronous or not exist depending on the wrapper.
-          // Checking flutter_monaco generic controller methods.
-          // If 'getValue' is not exposed, we are stuck for auto-save without JS interop.
-          // BUT, usually wrappers expose it.
-          // assuming: Future<String> getValue() exists.
-
-          /*
-           * Since I can't see the library source, I'll try standard names.
-           * If this fails to compile, we'll need to use JS evaluation or give up on POLL auto-save.
-           */
-
-          // Note: FlutterMonaco's controller usually allows executing JS.
-          // Let's safe-guard this.
-          // Actual method might be `getText()` or `getValue()`.
-
-          // If compilation fails on `getValue`, I will revert this block.
           final content = await _editorController!.getValue();
 
           if (content != _currentCode) {
             // Don't save if content became empty but wasn't before (prevents accidental data loss)
             if (content.trim().isEmpty && _currentCode.trim().isNotEmpty) {
-              // Skip saving empty content - likely a glitch
               return true; // Continue polling
             }
             _currentCode = content;
@@ -307,30 +279,11 @@ class _EditorScreenState extends State<EditorScreen> {
             });
           }
         } catch (e) {
-          // debugPrint('Auto-save error: $e');
+          // Auto-save error
         }
       }
       return true;
     });
-  }
-
-  Future<void> _goToDefinition() async {
-    // Current implementation placeholder as we need LSP integration back or another solution
-    // But method must exist to fix compilation error.
-    // Go to Definition triggered
-
-    // Original LSP logic was here.
-    // We can restore it when we are ready to fix LSP imports,
-    // but for now let's just clear the error.
-    /*
-    if (_activeFile == null || _editorController == null) return;
-    try {
-      const pos = (lineNumber: 1, column: 1); // Dummy
-      // ... Call lspService ...
-    } catch (e) {
-      // Go to definition failed
-    }
-    */
   }
 
   void _openWebTab(String title, String url) {
@@ -376,12 +329,6 @@ class _EditorScreenState extends State<EditorScreen> {
     });
   }
 
-  void _showTerminal() {
-    setState(() {
-      _isOutputVisible = true;
-    });
-  }
-
   void _toggleOutput() {
     setState(() {
       _isOutputVisible = !_isOutputVisible;
@@ -412,7 +359,7 @@ class _EditorScreenState extends State<EditorScreen> {
 
     showDialog(
       context: context,
-      builder: (context) => _QuickOpenDialog(
+      builder: (context) => QuickOpenDialog(
         files: allFiles,
         rootPath: _rootNode!.path,
         onFileSelected: (file) {
@@ -467,9 +414,7 @@ class _EditorScreenState extends State<EditorScreen> {
 
       // Refresh the file tree
       if (_rootNode != null) {
-        final newRoot = await fileService.pickDirectory();
-        // This is a workaround - ideally we'd refresh without re-picking
-        // For now, just reload the same directory
+        await fileService.pickDirectory();
         setState(() {
           // The tree will update on next rebuild
         });
@@ -681,7 +626,13 @@ class _EditorScreenState extends State<EditorScreen> {
                   ),
 
                 // Horizontal resize handle for sidebar
-                _buildHorizontalResizeHandle(),
+                HorizontalResizeHandle(
+                  onDrag: (delta) {
+                    setState(() {
+                      _sidebarWidth = (_sidebarWidth + delta).clamp(150.0, 500.0);
+                    });
+                  },
+                ),
 
                 // Main Editor Area
                 Expanded(
@@ -698,12 +649,23 @@ class _EditorScreenState extends State<EditorScreen> {
                         child: _activeWebTab != null
                             ? _buildWebView()
                             : _activeFile == null
-                                ? _buildWelcomeScreen()
+                                ? WelcomeScreen(
+                                    rootName: _rootNode?.name,
+                                    onPickDirectory: _pickDirectory,
+                                    onCreateNewFile: _rootNode != null ? _createNewFile : null,
+                                  )
                                 : _buildEditor(),
                       ),
 
                       // Vertical resize handle for terminal
-                      if (_isOutputVisible) _buildVerticalResizeHandle(),
+                      if (_isOutputVisible)
+                        VerticalResizeHandle(
+                          onDrag: (delta) {
+                            setState(() {
+                              _terminalHeight = (_terminalHeight - delta).clamp(100.0, 500.0);
+                            });
+                          },
+                        ),
 
                       // Output Panel (Terminal)
                       OutputPanel(
@@ -731,60 +693,6 @@ class _EditorScreenState extends State<EditorScreen> {
     );
   }
 
-  Widget _buildHorizontalResizeHandle() {
-    return MouseRegion(
-      cursor: SystemMouseCursors.resizeColumn,
-      child: GestureDetector(
-        onHorizontalDragUpdate: (details) {
-          setState(() {
-            _sidebarWidth = (_sidebarWidth + details.delta.dx).clamp(150.0, 500.0);
-          });
-        },
-        child: Container(
-          width: 4,
-          color: const Color(0xFF3C3C3C),
-          child: Center(
-            child: Container(
-              width: 2,
-              height: 20,
-              decoration: BoxDecoration(
-                color: Colors.white24,
-                borderRadius: BorderRadius.circular(1),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildVerticalResizeHandle() {
-    return MouseRegion(
-      cursor: SystemMouseCursors.resizeRow,
-      child: GestureDetector(
-        onVerticalDragUpdate: (details) {
-          setState(() {
-            _terminalHeight = (_terminalHeight - details.delta.dy).clamp(100.0, 500.0);
-          });
-        },
-        child: Container(
-          height: 4,
-          color: const Color(0xFF3C3C3C),
-          child: Center(
-            child: Container(
-              width: 20,
-              height: 2,
-              decoration: BoxDecoration(
-                color: Colors.white24,
-                borderRadius: BorderRadius.circular(1),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
   Widget _buildActivityBar() {
     final activities = [
       (Icons.insert_drive_file_outlined, 'Explorer'),
@@ -801,7 +709,7 @@ class _EditorScreenState extends State<EditorScreen> {
             final index = entry.key;
             final (icon, tooltip) = entry.value;
             final isSelected = index == _selectedActivityIndex;
-            return _ActivityBarItem(
+            return ActivityBarItem(
               icon: icon,
               tooltip: tooltip,
               isSelected: isSelected,
@@ -829,19 +737,19 @@ class _EditorScreenState extends State<EditorScreen> {
                 children: [
                   Row(
                     children: [
-                      _SidebarIconButton(
+                      SidebarIconButton(
                         icon: Icons.create_new_folder_outlined,
                         tooltip: 'New Folder',
                         onPressed: _createNewFolder,
                       ),
                       const SizedBox(width: 4),
-                      _SidebarIconButton(
+                      SidebarIconButton(
                         icon: Icons.note_add_outlined,
                         tooltip: 'New File',
                         onPressed: _createNewFile,
                       ),
                       const SizedBox(width: 4),
-                      _SidebarIconButton(
+                      SidebarIconButton(
                         icon: Icons.folder_open,
                         tooltip: 'Open Folder',
                         onPressed: _pickDirectory,
@@ -919,12 +827,33 @@ class _EditorScreenState extends State<EditorScreen> {
                 // File tabs
                 ..._openFiles.map((file) {
                   final isActive = file.path == _activeFile?.path && _activeWebTab == null;
-                  return _buildTab(file, isActive);
+                  return EditorTab(
+                    file: file,
+                    isActive: isActive,
+                    onTap: () {
+                      setState(() {
+                        _activeWebTab = null;
+                      });
+                      _openFile(file);
+                    },
+                    onClose: () => _closeFile(file),
+                    icon: _getFileIcon(file.name),
+                  );
                 }),
                 // Web tabs
                 ..._webTabs.map((webTab) {
                   final isActive = webTab == _activeWebTab;
-                  return _buildWebTab(webTab, isActive);
+                  return WebEditorTab(
+                    webTab: webTab,
+                    isActive: isActive,
+                    onTap: () {
+                      setState(() {
+                        _activeWebTab = webTab;
+                        _activeFile = null;
+                      });
+                    },
+                    onClose: () => _closeWebTab(webTab),
+                  );
                 }),
               ],
             ),
@@ -991,101 +920,10 @@ class _EditorScreenState extends State<EditorScreen> {
     );
   }
 
-  Widget _buildWelcomeScreen() {
-    return Container(
-      color: const Color(0xFF1E1E1E),
-      child: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.code, size: 64, color: Color(0x1AFFFFFF)),
-            const SizedBox(height: 24),
-            const Text(
-              'Flutter IDE',
-              style: TextStyle(
-                color: Colors.white70,
-                fontSize: 28,
-                fontWeight: FontWeight.w300,
-                letterSpacing: 1.5,
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Open a file or folder to get started',
-              style: TextStyle(color: Colors.white38, fontSize: 14),
-            ),
-            const SizedBox(height: 32),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                _WelcomeButton(
-                  icon: Icons.folder_open,
-                  label: 'Open Folder',
-                  shortcut: '⌘O',
-                  onPressed: _pickDirectory,
-                ),
-                const SizedBox(width: 16),
-
-                if (_rootNode != null)
-                  _WelcomeButton(
-                    icon: Icons.note_add,
-                    label: 'New File',
-                    shortcut: '⌘N',
-                    onPressed: _createNewFile,
-                  ),
-              ],
-            ),
-            const SizedBox(height: 48),
-            if (_rootNode != null) ...[
-              const Text(
-                'Recent',
-                style: TextStyle(
-                  color: Colors.white54,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 8,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0x0DFFFFFF),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      Icons.folder,
-                      size: 16,
-                      color: Color(0xFF90A4AE),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      _rootNode!.name,
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 13,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
   Widget _buildEditor() {
     return Listener(
       onPointerDown: (_) {
         if (HardwareKeyboard.instance.isMetaPressed) {
-          _goToDefinition();
         }
       },
       child: MonacoEditor(
@@ -1163,42 +1001,13 @@ class _EditorScreenState extends State<EditorScreen> {
           const Spacer(),
 
           // Right side
-          _StatusBarItem(label: 'Spaces: 2', onPressed: () {}),
-          const _StatusBarDivider(),
-          _StatusBarItem(label: 'UTF-8', onPressed: () {}),
-          const _StatusBarDivider(),
-          _StatusBarItem(label: language, onPressed: () {}),
+          StatusBarItem(label: 'Spaces: 2', onPressed: () {}),
+          const StatusBarDivider(),
+          StatusBarItem(label: 'UTF-8', onPressed: () {}),
+          const StatusBarDivider(),
+          StatusBarItem(label: language, onPressed: () {}),
         ],
       ),
-    );
-  }
-
-  Widget _buildTab(FileNodeFile file, bool isActive) {
-    return _EditorTab(
-      file: file,
-      isActive: isActive,
-      onTap: () {
-        setState(() {
-          _activeWebTab = null;
-        });
-        _openFile(file);
-      },
-      onClose: () => _closeFile(file),
-      icon: _getFileIcon(file.name),
-    );
-  }
-
-  Widget _buildWebTab(WebTab webTab, bool isActive) {
-    return _WebEditorTab(
-      webTab: webTab,
-      isActive: isActive,
-      onTap: () {
-        setState(() {
-          _activeWebTab = webTab;
-          _activeFile = null;
-        });
-      },
-      onClose: () => _closeWebTab(webTab),
     );
   }
 
@@ -1235,763 +1044,3 @@ class _EditorScreenState extends State<EditorScreen> {
     return Icon(icon, size: 14, color: color);
   }
 }
-
-// Helper Widgets
-
-class _ActivityBarItem extends StatefulWidget {
-  final IconData icon;
-  final String tooltip;
-  final bool isSelected;
-  final VoidCallback onTap;
-
-  const _ActivityBarItem({
-    required this.icon,
-    required this.tooltip,
-    required this.isSelected,
-    required this.onTap,
-  });
-
-  @override
-  State<_ActivityBarItem> createState() => _ActivityBarItemState();
-}
-
-class _ActivityBarItemState extends State<_ActivityBarItem> {
-  bool _isHovered = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return Tooltip(
-      message: widget.tooltip,
-      waitDuration: const Duration(milliseconds: 500),
-      child: MouseRegion(
-        onEnter: (_) => setState(() => _isHovered = true),
-        onExit: (_) => setState(() => _isHovered = false),
-        child: GestureDetector(
-          onTap: widget.onTap,
-          child: Container(
-            width: 48,
-            height: 48,
-            decoration: BoxDecoration(
-              color: _isHovered ? const Color(0x1AFFFFFF) : null,
-              border: Border(
-                left: BorderSide(
-                  color: widget.isSelected ? Colors.white : Colors.transparent,
-                  width: 2,
-                ),
-              ),
-            ),
-            child: Icon(
-              widget.icon,
-              size: 24,
-              color: widget.isSelected || _isHovered
-                  ? Colors.white
-                  : Colors.white54,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _SidebarIconButton extends StatefulWidget {
-  final IconData icon;
-  final String tooltip;
-  final VoidCallback onPressed;
-
-  const _SidebarIconButton({
-    required this.icon,
-    required this.tooltip,
-    required this.onPressed,
-  });
-
-  @override
-  State<_SidebarIconButton> createState() => _SidebarIconButtonState();
-}
-
-class _SidebarIconButtonState extends State<_SidebarIconButton> {
-  bool _isHovered = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return Tooltip(
-      message: widget.tooltip,
-      waitDuration: const Duration(milliseconds: 500),
-      child: MouseRegion(
-        onEnter: (_) => setState(() => _isHovered = true),
-        onExit: (_) => setState(() => _isHovered = false),
-        child: GestureDetector(
-          onTap: widget.onPressed,
-          child: Container(
-            padding: const EdgeInsets.all(4),
-            decoration: BoxDecoration(
-              color: _isHovered ? const Color(0x1AFFFFFF) : null,
-              borderRadius: BorderRadius.circular(4),
-            ),
-            child: Icon(
-              widget.icon,
-              color: _isHovered ? Colors.white : Colors.white70,
-              size: 16,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _TabActionButton extends StatefulWidget {
-  final IconData icon;
-  final String tooltip;
-  final Color? color;
-  final VoidCallback onPressed;
-
-  const _TabActionButton({
-    required this.icon,
-    required this.tooltip,
-    this.color,
-    required this.onPressed,
-  });
-
-  @override
-  State<_TabActionButton> createState() => _TabActionButtonState();
-}
-
-class _TabActionButtonState extends State<_TabActionButton> {
-  bool _isHovered = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return Tooltip(
-      message: widget.tooltip,
-      waitDuration: const Duration(milliseconds: 500),
-      child: MouseRegion(
-        onEnter: (_) => setState(() => _isHovered = true),
-        onExit: (_) => setState(() => _isHovered = false),
-        child: GestureDetector(
-          onTap: widget.onPressed,
-          child: Container(
-            padding: const EdgeInsets.all(6),
-            decoration: BoxDecoration(
-              color: _isHovered ? const Color(0x1AFFFFFF) : null,
-              borderRadius: BorderRadius.circular(4),
-            ),
-            child: Icon(
-              widget.icon,
-              color:
-                  widget.color ?? (_isHovered ? Colors.white : Colors.white70),
-              size: 16,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _WelcomeButton extends StatefulWidget {
-  final IconData icon;
-  final String label;
-  final String shortcut;
-  final VoidCallback onPressed;
-
-  const _WelcomeButton({
-    required this.icon,
-    required this.label,
-    required this.shortcut,
-    required this.onPressed,
-  });
-
-  @override
-  State<_WelcomeButton> createState() => _WelcomeButtonState();
-}
-
-class _WelcomeButtonState extends State<_WelcomeButton> {
-  bool _isHovered = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return MouseRegion(
-      onEnter: (_) => setState(() => _isHovered = true),
-      onExit: (_) => setState(() => _isHovered = false),
-      child: GestureDetector(
-        onTap: widget.onPressed,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 150),
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-          decoration: BoxDecoration(
-            color: _isHovered
-                ? const Color(0xFF007ACC)
-                : const Color(0xFF0E639C),
-            borderRadius: BorderRadius.circular(6),
-            boxShadow: _isHovered
-                ? [
-                    BoxShadow(
-                      color: const Color(0x4D007ACC),
-                      blurRadius: 8,
-                      offset: const Offset(0, 2),
-                    ),
-                  ]
-                : null,
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(widget.icon, size: 18, color: Colors.white),
-              const SizedBox(width: 10),
-              Text(
-                widget.label,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: const Color(0x26FFFFFF),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Text(
-                  widget.shortcut,
-                  style: const TextStyle(
-                    color: Colors.white70,
-                    fontSize: 11,
-                    fontFamily: 'monospace',
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _StatusBarItem extends StatefulWidget {
-  final IconData? icon;
-  final String? label;
-  final VoidCallback onPressed;
-
-  const _StatusBarItem({this.icon, this.label, required this.onPressed});
-
-  @override
-  State<_StatusBarItem> createState() => _StatusBarItemState();
-}
-
-class _StatusBarItemState extends State<_StatusBarItem> {
-  bool _isHovered = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return MouseRegion(
-      onEnter: (_) => setState(() => _isHovered = true),
-      onExit: (_) => setState(() => _isHovered = false),
-      child: GestureDetector(
-        onTap: widget.onPressed,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6),
-          color: _isHovered ? const Color(0x1FFFFFFF) : null,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (widget.icon != null)
-                Padding(
-                  padding: EdgeInsets.only(
-                    right: widget.label != null && widget.label!.isNotEmpty
-                        ? 4
-                        : 0,
-                  ),
-                  child: Icon(widget.icon, size: 14, color: Colors.white),
-                ),
-              if (widget.label != null && widget.label!.isNotEmpty)
-                Text(
-                  widget.label!,
-                  style: const TextStyle(color: Colors.white, fontSize: 12),
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _StatusBarDivider extends StatelessWidget {
-  const _StatusBarDivider();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 1,
-      height: 14,
-      margin: const EdgeInsets.symmetric(horizontal: 4),
-      color: Colors.white24,
-    );
-  }
-}
-
-class _EditorTab extends StatefulWidget {
-  final FileNodeFile file;
-  final bool isActive;
-  final VoidCallback onTap;
-  final VoidCallback onClose;
-  final Icon icon;
-
-  const _EditorTab({
-    required this.file,
-    required this.isActive,
-    required this.onTap,
-    required this.onClose,
-    required this.icon,
-  });
-
-  @override
-  State<_EditorTab> createState() => _EditorTabState();
-}
-
-class _EditorTabState extends State<_EditorTab> {
-  bool _isHovered = false;
-  bool _isCloseHovered = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return MouseRegion(
-      onEnter: (_) => setState(() => _isHovered = true),
-      onExit: (_) => setState(() => _isHovered = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: Container(
-          padding: const EdgeInsets.only(left: 10, right: 4),
-          constraints: const BoxConstraints(minWidth: 120, maxWidth: 200),
-          decoration: BoxDecoration(
-            color: widget.isActive
-                ? const Color(0xFF1E1E1E)
-                : _isHovered
-                ? const Color(0xFF2D2D2D)
-                : const Color(0xFF252526),
-            border: widget.isActive
-                ? const Border(
-                    top: BorderSide(color: Color(0xFF007ACC), width: 2),
-                  )
-                : null,
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              widget.icon,
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  widget.file.name,
-                  style: TextStyle(
-                    color: widget.isActive || _isHovered
-                        ? Colors.white
-                        : Colors.white54,
-                    fontSize: 13,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              const SizedBox(width: 4),
-              MouseRegion(
-                onEnter: (_) => setState(() => _isCloseHovered = true),
-                onExit: (_) => setState(() => _isCloseHovered = false),
-                child: GestureDetector(
-                  onTap: widget.onClose,
-                  child: Container(
-                    padding: const EdgeInsets.all(2),
-                    decoration: BoxDecoration(
-                      color: _isCloseHovered ? const Color(0x33FFFFFF) : null,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Icon(
-                      Icons.close,
-                      size: 14,
-                      color: _isHovered || widget.isActive
-                          ? Colors.white70
-                          : Colors.transparent,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// Web Tab Widget
-class _WebEditorTab extends StatefulWidget {
-  final WebTab webTab;
-  final bool isActive;
-  final VoidCallback onTap;
-  final VoidCallback onClose;
-
-  const _WebEditorTab({
-    required this.webTab,
-    required this.isActive,
-    required this.onTap,
-    required this.onClose,
-  });
-
-  @override
-  State<_WebEditorTab> createState() => _WebEditorTabState();
-}
-
-class _WebEditorTabState extends State<_WebEditorTab> {
-  bool _isHovered = false;
-  bool _isCloseHovered = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return MouseRegion(
-      onEnter: (_) => setState(() => _isHovered = true),
-      onExit: (_) => setState(() => _isHovered = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: Container(
-          padding: const EdgeInsets.only(left: 10, right: 4),
-          constraints: const BoxConstraints(minWidth: 120, maxWidth: 200),
-          decoration: BoxDecoration(
-            color: widget.isActive
-                ? const Color(0xFF1E1E1E)
-                : _isHovered
-                ? const Color(0xFF2D2D2D)
-                : const Color(0xFF252526),
-            border: widget.isActive
-                ? const Border(
-                    top: BorderSide(color: Color(0xFF007ACC), width: 2),
-                  )
-                : null,
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.public, size: 14, color: Color(0xFF42A5F5)),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  widget.webTab.title,
-                  style: TextStyle(
-                    color: widget.isActive || _isHovered
-                        ? Colors.white
-                        : Colors.white54,
-                    fontSize: 13,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              const SizedBox(width: 4),
-              MouseRegion(
-                onEnter: (_) => setState(() => _isCloseHovered = true),
-                onExit: (_) => setState(() => _isCloseHovered = false),
-                child: GestureDetector(
-                  onTap: widget.onClose,
-                  child: Container(
-                    padding: const EdgeInsets.all(2),
-                    decoration: BoxDecoration(
-                      color: _isCloseHovered ? const Color(0x33FFFFFF) : null,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Icon(
-                      Icons.close,
-                      size: 14,
-                      color: _isHovered || widget.isActive
-                          ? Colors.white70
-                          : Colors.transparent,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// Quick Open Dialog Widget
-class _QuickOpenDialog extends StatefulWidget {
-  final List<FileNodeFile> files;
-  final String rootPath;
-  final Function(FileNodeFile) onFileSelected;
-
-  const _QuickOpenDialog({
-    required this.files,
-    required this.rootPath,
-    required this.onFileSelected,
-  });
-
-  @override
-  State<_QuickOpenDialog> createState() => _QuickOpenDialogState();
-}
-
-class _QuickOpenDialogState extends State<_QuickOpenDialog> {
-  final TextEditingController _searchController = TextEditingController();
-  final FocusNode _searchFocusNode = FocusNode();
-  List<FileNodeFile> _filteredFiles = [];
-  int _selectedIndex = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _filteredFiles = _sortFiles(List.from(widget.files));
-    _searchController.addListener(_onSearchChanged);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _searchFocusNode.requestFocus();
-    });
-  }
-
-  @override
-  void dispose() {
-    _searchController.dispose();
-    _searchFocusNode.dispose();
-    super.dispose();
-  }
-
-  void _onSearchChanged() {
-    final query = _searchController.text.toLowerCase();
-    setState(() {
-      List<FileNodeFile> results;
-      if (query.isEmpty) {
-        results = List.from(widget.files);
-      } else {
-        results = widget.files.where((file) {
-          return file.name.toLowerCase().contains(query) ||
-              file.path.toLowerCase().contains(query);
-        }).toList();
-      }
-      _filteredFiles = _sortFiles(results);
-      _selectedIndex = 0;
-    });
-  }
-
-  List<FileNodeFile> _sortFiles(List<FileNodeFile> files) {
-    // Priority: Dart files first, build folder last, alphabetical within groups
-    files.sort((a, b) {
-      final aInBuild = a.path.contains('/build/');
-      final bInBuild = b.path.contains('/build/');
-      final aIsDart = a.name.endsWith('.dart');
-      final bIsDart = b.name.endsWith('.dart');
-
-      // Build folder files go last
-      if (aInBuild && !bInBuild) return 1;
-      if (!aInBuild && bInBuild) return -1;
-
-      // Dart files go first (unless in build folder)
-      if (aIsDart && !bIsDart) return -1;
-      if (!aIsDart && bIsDart) return 1;
-
-      // Alphabetical by name within same priority
-      return a.name.toLowerCase().compareTo(b.name.toLowerCase());
-    });
-    return files;
-  }
-
-  String _getRelativePath(String fullPath) {
-    if (fullPath.startsWith(widget.rootPath)) {
-      return fullPath.substring(widget.rootPath.length + 1);
-    }
-    return fullPath;
-  }
-
-  void _handleKeyEvent(KeyEvent event) {
-    if (event is! KeyDownEvent) return;
-
-    if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
-      setState(() {
-        _selectedIndex = (_selectedIndex + 1).clamp(0, _filteredFiles.length - 1);
-      });
-    } else if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
-      setState(() {
-        _selectedIndex = (_selectedIndex - 1).clamp(0, _filteredFiles.length - 1);
-      });
-    } else if (event.logicalKey == LogicalKeyboardKey.enter) {
-      if (_filteredFiles.isNotEmpty) {
-        widget.onFileSelected(_filteredFiles[_selectedIndex]);
-      }
-    } else if (event.logicalKey == LogicalKeyboardKey.escape) {
-      Navigator.of(context).pop();
-    }
-  }
-
-  Icon _getFileIcon(String fileName) {
-    final ext = p.extension(fileName).toLowerCase();
-    IconData icon = Icons.insert_drive_file_outlined;
-    Color color = Colors.grey;
-
-    switch (ext) {
-      case '.dart':
-        icon = Icons.code;
-        color = const Color(0xFF42A5F5);
-        break;
-      case '.yaml':
-      case '.yml':
-        icon = Icons.settings;
-        color = const Color(0xFFEF5350);
-        break;
-      case '.json':
-        icon = Icons.data_object;
-        color = const Color(0xFF66BB6A);
-        break;
-      case '.md':
-        icon = Icons.description;
-        color = Colors.white70;
-        break;
-      case '.html':
-        icon = Icons.html;
-        color = const Color(0xFFE65100);
-        break;
-      case '.css':
-        icon = Icons.css;
-        color = const Color(0xFF1E88E5);
-        break;
-      case '.js':
-      case '.ts':
-        icon = Icons.javascript;
-        color = const Color(0xFFFFCA28);
-        break;
-    }
-    return Icon(icon, size: 18, color: color);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return KeyboardListener(
-      focusNode: FocusNode(),
-      onKeyEvent: _handleKeyEvent,
-      child: Dialog(
-        backgroundColor: const Color(0xFF252526),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-        child: Container(
-          width: 500,
-          constraints: const BoxConstraints(maxHeight: 400),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Search field
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: const BoxDecoration(
-                  border: Border(
-                    bottom: BorderSide(color: Color(0xFF3C3C3C), width: 1),
-                  ),
-                ),
-                child: TextField(
-                  controller: _searchController,
-                  focusNode: _searchFocusNode,
-                  style: const TextStyle(color: Colors.white, fontSize: 14),
-                  decoration: InputDecoration(
-                    hintText: 'Search files by name...',
-                    hintStyle: const TextStyle(color: Colors.white38),
-                    prefixIcon: const Icon(Icons.search, color: Colors.white38, size: 20),
-                    filled: true,
-                    fillColor: const Color(0xFF3C3C3C),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(6),
-                      borderSide: BorderSide.none,
-                    ),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  ),
-                ),
-              ),
-
-              // File list
-              Flexible(
-                child: _filteredFiles.isEmpty
-                    ? const Center(
-                        child: Padding(
-                          padding: EdgeInsets.all(24),
-                          child: Text(
-                            'No files found',
-                            style: TextStyle(color: Colors.white38),
-                          ),
-                        ),
-                      )
-                    : ListView.builder(
-                        shrinkWrap: true,
-                        itemCount: _filteredFiles.length,
-                        itemBuilder: (context, index) {
-                          final file = _filteredFiles[index];
-                          final isSelected = index == _selectedIndex;
-                          final relativePath = _getRelativePath(file.path);
-
-                          return InkWell(
-                            onTap: () => widget.onFileSelected(file),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                              color: isSelected ? const Color(0xFF094771) : null,
-                              child: Row(
-                                children: [
-                                  _getFileIcon(file.name),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          file.name,
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 13,
-                                          ),
-                                        ),
-                                        Text(
-                                          relativePath,
-                                          style: const TextStyle(
-                                            color: Colors.white38,
-                                            fontSize: 11,
-                                          ),
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-              ),
-
-              // Footer hint
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: const BoxDecoration(
-                  border: Border(
-                    top: BorderSide(color: Color(0xFF3C3C3C), width: 1),
-                  ),
-                ),
-                child: const Row(
-                  children: [
-                    Text(
-                      '↑↓ to navigate  ',
-                      style: TextStyle(color: Colors.white38, fontSize: 11),
-                    ),
-                    Text(
-                      '↵ to open  ',
-                      style: TextStyle(color: Colors.white38, fontSize: 11),
-                    ),
-                    Text(
-                      'esc to close',
-                      style: TextStyle(color: Colors.white38, fontSize: 11),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
