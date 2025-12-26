@@ -11,6 +11,7 @@ class OutputPanel extends StatefulWidget {
   final String? workingDirectory;
   final String? initialCommand;
   final VoidCallback? onCommandExecuted;
+  final VoidCallback? onCloseTerminal;
 
   const OutputPanel({
     super.key,
@@ -19,6 +20,7 @@ class OutputPanel extends StatefulWidget {
     this.workingDirectory,
     this.initialCommand,
     this.onCommandExecuted,
+    this.onCloseTerminal,
   });
 
   @override
@@ -176,6 +178,14 @@ class _OutputPanelState extends State<OutputPanel> {
                   icon: Icons.delete_outline,
                   tooltip: 'Clear',
                   onPressed: () {
+                    pty?.write(Uint8List.fromList(utf8.encode("clear\n")));
+                  },
+                ),
+                _TerminalHeaderButton(
+                  icon: Icons.close,
+                  tooltip: 'Close Terminal',
+                  onPressed: () {
+                    widget.onCloseTerminal?.call();
                     pty?.write(Uint8List.fromList(utf8.encode("clear\n")));
                   },
                 ),

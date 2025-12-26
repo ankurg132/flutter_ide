@@ -673,6 +673,11 @@ class _EditorScreenState extends State<EditorScreen> {
                         height: _terminalHeight,
                         workingDirectory: _rootNode?.path,
                         initialCommand: _pendingCommand,
+                        onCloseTerminal: () {
+                          setState(() {
+                            _isOutputVisible = false;
+                          });
+                        },
                         onCommandExecuted: () {
                           setState(() {
                             _pendingCommand = null;
@@ -717,6 +722,16 @@ class _EditorScreenState extends State<EditorScreen> {
             );
           }),
           const Spacer(),
+          ActivityBarItem(
+            icon: Icons.terminal,
+            tooltip: 'Terminal',
+            isSelected: false,
+            onTap: () {
+              setState(() {
+                _isOutputVisible = !_isOutputVisible;
+              });
+            },
+          ),
         ],
       ),
     );
@@ -927,6 +942,12 @@ class _EditorScreenState extends State<EditorScreen> {
         }
       },
       child: MonacoEditor(
+        loadingBuilder: (context) => Container(
+          color: const Color(0xFF1E1E1E),
+          child: const Center(
+            child: CircularProgressIndicator(color: Color(0xFF42A5F5)),
+          ),
+        ),
         initialValue: _currentCode,
         options: const EditorOptions(
           language: MonacoLanguage.dart,
