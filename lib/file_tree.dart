@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:path/path.dart' as p;
 import 'models/file_system_entity.dart';
 
@@ -196,7 +197,7 @@ class _FileTreeState extends State<FileTree> {
 
     switch (ext) {
       case '.dart':
-        icon = Icons.code;
+        icon = FontAwesomeIcons.dartLang;
         color = const Color(0xFF42A5F5); // Flutter Blue
         break;
       case '.html':
