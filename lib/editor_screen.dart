@@ -3,7 +3,9 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_ide/widgets/git/git_sidebar.dart';
 import 'package:flutter_monaco/flutter_monaco.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:path/path.dart' as p;
 import 'package:webview_flutter/webview_flutter.dart';
 import 'models/file_system_entity.dart';
@@ -625,6 +627,15 @@ class _EditorScreenState extends State<EditorScreen> {
                     ),
                   ),
 
+                if (_selectedActivityIndex == 3)
+                  SizedBox(
+                    width: _sidebarWidth + 50,
+                    child: GitSidebar(
+                      workingDirectory: _rootNode?.path,
+                      onRunCommand: _runTerminalCommand,
+                    ),
+                  ),
+
                 // Horizontal resize handle for sidebar
                 HorizontalResizeHandle(
                   onDrag: (delta) {
@@ -703,6 +714,7 @@ class _EditorScreenState extends State<EditorScreen> {
       (Icons.insert_drive_file_outlined, 'Explorer'),
       (Icons.explore, 'Flutter explorer'),
       (Icons.inventory_2_outlined, 'Pub.dev Packages'),
+      (FontAwesomeIcons.codeBranch, 'Source Control'),
     ];
 
     return Container(
@@ -1039,7 +1051,7 @@ class _EditorScreenState extends State<EditorScreen> {
 
     switch (ext) {
       case '.dart':
-        icon = Icons.code;
+        icon = FontAwesomeIcons.dartLang;
         color = const Color(0xFF42A5F5);
         break;
       case '.html':
