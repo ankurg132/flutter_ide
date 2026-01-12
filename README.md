@@ -173,6 +173,7 @@ runTerminalCommand('dart analyze');
 | Shortcut | Action |
 |----------|--------|
 | Cmd/Ctrl + P | Quick file search |
+| Cmd/Ctrl + Shift + F | Search in files |
 | Cmd/Ctrl + O | Open folder |
 | Cmd/Ctrl + N | New file |
 | Cmd/Ctrl + Click | Go to definition (placeholder) |

@@ -1,0 +1,70 @@
+name: flutter_monaco
+description: Integrate Monaco Editor (VS Code's editor) in Flutter apps. Features 100+ languages, syntax highlighting, themes, and full API.
+version: 1.1.1
+homepage: https://github.com/omar-hanafy/flutter_monaco
+repository: https://github.com/omar-hanafy/flutter_monaco
+issue_tracker: https://github.com/omar-hanafy/flutter_monaco/issues
+documentation: https://github.com/omar-hanafy/flutter_monaco#readme
+
+topics:
+  - vscode
+  - monaco
+  - editor
+  - markdown
+  - ide
+
+platforms:
+  android:
+  ios:
+  macos:
+  windows:
+  # linux: # Not yet supported (no webview support yet)
+  # web: # Not supported (asset bundling limitation)
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: ">=3.16.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_helper_utils: ^8.5.0
+  freezed_annotation: ^3.1.0
+  path: ^1.9.1
+  path_provider: ^2.1.5
+  webview_flutter: ^4.13.0
+  webview_windows: ^0.4.0
+
+dev_dependencies:
+  build_runner: ^2.8.0
+  custom_lint: ^0.8.1
+  flutter_lints: 6.0.0
+  flutter_test:
+    sdk: flutter
+  freezed: ^3.2.3
+
+flutter:
+  assets:
+    # Adding a trailing slash (e.g. assets/images/) only includes the files
+    # directly inside that directory. It does NOT include subdirectories
+    # or their contents.
+    #
+    # Flutter does not support recursive asset inclusion. If you have
+    # nested directories and want to include their assets as well, you must
+    # list each subdirectory manually.
+    #
+    # Flutter's asset loader is non-recursive, so every subdirectory that
+    # contains files must be listed explicitly. The new Monaco 0.54.0 drop
+    # flattens most bundles directly under vs/, so we only need to include the
+    # directories that still contain nested files.
+    - assets/monaco/
+    - assets/monaco/min/
+    - assets/monaco/min/vs/
+    - assets/monaco/min/vs/assets/
+    - assets/monaco/min/vs/editor/
+    - assets/monaco/min/vs/basic-languages/
+    - assets/monaco/min/vs/language/
+    - assets/monaco/min/vs/language/css/
+    - assets/monaco/min/vs/language/html/
+    - assets/monaco/min/vs/language/json/
+    - assets/monaco/min/vs/language/typescript/

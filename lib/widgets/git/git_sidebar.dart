@@ -698,62 +698,46 @@ class _GitSidebarState extends State<GitSidebar> {
                 _selectedCommitAction == _CommitAction.commit
                     ? 'Commit'
                     : _selectedCommitAction == _CommitAction.commitAndPush
-                        ? 'Commit & Push'
-                        : 'Commit & Sync',
+                    ? 'Commit & Push'
+                    : 'Commit & Sync',
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
             ),
           ),
         ),
         const SizedBox(width: 8),
+
+        // Anchor the menu to the arrow button itself (reliable positioning).
         SizedBox(
           height: 40,
           width: 44,
           child: Material(
-            key: _commitActionMenuKey,
             color: enabled ? accent : const Color(0xFF3C3C3C),
             borderRadius: BorderRadius.circular(10),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(10),
-              onTap: !enabled
-                  ? null
-                  : () async {
-                      // Anchor the menu to the dropdown button rather than hard-coding a screen position.
-                      final box = _commitActionMenuKey.currentContext?.findRenderObject() as RenderBox?;
-                      final overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
-                      if (box == null || overlay == null) return;
-
-                      final topLeft = box.localToGlobal(Offset.zero, ancestor: overlay);
-                      final bottomRight = box.localToGlobal(box.size.bottomRight(Offset.zero), ancestor: overlay);
-
-                      final position = RelativeRect.fromRect(
-                        Rect.fromPoints(topLeft, bottomRight),
-                        Offset.zero & overlay.size,
-                      );
-
-                      final selected = await showMenu<_CommitAction>(
-                        context: context,
-                        position: position,
-                        color: const Color(0xFF252526),
-                        items: const [
-                          PopupMenuItem(
-                            value: _CommitAction.commit,
-                            child: Text('Commit', style: TextStyle(color: Colors.white70)),
-                          ),
-                          PopupMenuItem(
-                            value: _CommitAction.commitAndPush,
-                            child: Text('Commit & Push', style: TextStyle(color: Colors.white70)),
-                          ),
-                          PopupMenuItem(
-                            value: _CommitAction.commitAndSync,
-                            child: Text('Commit & Sync', style: TextStyle(color: Colors.white70)),
-                          ),
-                        ],
-                      );
-                      if (selected != null && mounted) {
-                        setState(() => _selectedCommitAction = selected);
-                      }
-                    },
+            child: PopupMenuButton<_CommitAction>(
+              enabled: enabled,
+              padding: EdgeInsets.zero,
+              tooltip: 'Commit actions',
+              color: const Color(0xFF252526),
+              offset: const Offset(0, 44),
+              onSelected: (selected) {
+                if (!mounted) return;
+                setState(() => _selectedCommitAction = selected);
+              },
+              itemBuilder: (context) => const [
+                PopupMenuItem(
+                  value: _CommitAction.commit,
+                  child: Text('Commit', style: TextStyle(color: Colors.white70)),
+                ),
+                PopupMenuItem(
+                  value: _CommitAction.commitAndPush,
+                  child: Text('Commit & Push', style: TextStyle(color: Colors.white70)),
+                ),
+                PopupMenuItem(
+                  value: _CommitAction.commitAndSync,
+                  child: Text('Commit & Sync', style: TextStyle(color: Colors.white70)),
+                ),
+              ],
               child: const Icon(Icons.arrow_drop_down, color: Colors.white),
             ),
           ),
@@ -831,15 +815,18 @@ class _GitSidebarState extends State<GitSidebar> {
       )
           : ListView.separated(
         itemCount: staged.length,
-        separatorBuilder: (_, __) =>
-        const Divider(height: 1, color: Color(0xFF2D2D2D)),
+        separatorBuilder: (_, __) => const Divider(height: 1, color: Color(0xFF2D2D2D)),
         itemBuilder: (context, index) {
           final f = staged[index];
           final isHovered = _hoveredStagedIndex == index;
 
           return MouseRegion(
             onEnter: (_) => setState(() => _hoveredStagedIndex = index),
-            onExit: (_) => setState(() => _hoveredStagedIndex = null),
+            onExit: (_) {
+              if (_hoveredStagedIndex == index) {
+                setState(() => _hoveredStagedIndex = null);
+              }
+            },
             child: ListTile(
               dense: true,
               leading: _statusChip(f.xy),
@@ -848,7 +835,10 @@ class _GitSidebarState extends State<GitSidebar> {
                 style: const TextStyle(color: Colors.white70, fontSize: 12),
                 overflow: TextOverflow.ellipsis,
               ),
-              trailing: _showOnHoverUnstage(f, isHovered), // ONLY unstage
+              trailing: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 120),
+                child: _showOnHoverUnstage(f, isHovered),
+              ),
             ),
           );
         },

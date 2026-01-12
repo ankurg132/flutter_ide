@@ -1,0 +1,67 @@
+# analysis_options.yaml — publishable packages focus
+# Conservative defaults + strict import/pubspec hygiene for pub.dev
+
+include: package:flutter_lints/flutter.yaml
+
+linter:
+  rules:
+    # --- Hygiene that directly affects publishability / maintainability ---
+    always_use_package_imports: true
+    avoid_relative_lib_imports: true
+    depend_on_referenced_packages: true
+    implementation_imports: true
+    public_member_api_docs: true
+    secure_pubspec_urls: true               # https:// URLs in pubspec
+
+    library_private_types_in_public_api: true
+
+    # --- Sensible preferences that rarely cause churn ---
+    prefer_single_quotes: true
+    prefer_const_constructors: true
+    sort_pub_dependencies: true
+
+    # --- Turn OFF chatty / conflicting style nits ---
+    prefer_relative_imports: false          # conflicts with package imports
+    lines_longer_than_80_chars: false       # let formatter/IDE handle this
+    constant_identifier_names: false        # don’t fight existing APIs
+    avoid_print: false                      # allow prints in packages by default
+    avoid_redundant_argument_values: false
+
+    # You can re-enable more rules later per repo as you like.
+
+analyzer:
+  # Keep analyzer from touching codegen / tool output
+  exclude:
+    - "**/*.g.dart"
+    - "**/*.freezed.dart"
+    - "**/*.gr.dart"
+    - "**/*.mocks.dart"
+    - "**/*.gen.dart"
+    - "**/*.gql.dart"
+    - "lib/generated/**"
+    - "lib/**/generated/**"
+    - "build/**"
+    - ".dart_tool/**"
+
+  # Escalate only the things that matter for publish; keep noise low.
+  errors:
+    # Publish-safety: FAIL the build if these are violated
+    always_use_package_imports: error
+    avoid_relative_lib_imports: error
+    depend_on_referenced_packages: error
+    implementation_imports: error
+    secure_pubspec_urls: error
+
+    # Keep these helpful but non-blocking
+    library_private_types_in_public_api: warning
+    directives_ordering: warning
+    use_key_in_widget_constructors: warning        # useful in Flutter libs
+    deprecated_member_use_from_same_package: warning
+    unawaited_futures: warning
+    comment_references: info
+    public_member_api_docs: error                   # pana/doc coverage is separate
+
+    # Quiet common time-wasters
+    constant_identifier_names: ignore
+    lines_longer_than_80_chars: ignore
+    prefer_relative_imports: ignore

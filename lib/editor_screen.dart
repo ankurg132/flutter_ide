@@ -21,6 +21,9 @@ import 'widgets/editor/status_bar.dart';
 import 'widgets/editor/welcome_screen.dart';
 import 'widgets/editor/quick_open_dialog.dart';
 import 'widgets/editor/resize_handles.dart';
+import 'widgets/editor/global_search_dialog.dart';
+import 'services/search_service.dart';
+import 'widgets/editor/search_button.dart';
 
 // Global function to run terminal commands from anywhere
 void Function(String command)? _globalRunTerminalCommand;
@@ -199,6 +202,15 @@ class _EditorScreenState extends State<EditorScreen> {
     if (event is! KeyDownEvent) return false;
 
     final isMetaPressed = HardwareKeyboard.instance.isMetaPressed;
+    final isControlPressed = HardwareKeyboard.instance.isControlPressed;
+    final isShiftPressed = HardwareKeyboard.instance.isShiftPressed;
+
+    // Cmd/Ctrl+Shift+F: search across files
+    if ((isMetaPressed || isControlPressed) && isShiftPressed &&
+        event.logicalKey == LogicalKeyboardKey.keyF) {
+      _showGlobalSearch();
+      return true;
+    }
 
     if (isMetaPressed && event.logicalKey == LogicalKeyboardKey.keyP) {
       _showQuickOpen();
@@ -211,6 +223,71 @@ class _EditorScreenState extends State<EditorScreen> {
     }
 
     return false; // Event not handled
+  }
+
+  void _showGlobalSearch() {
+    if (_rootNode == null) return;
+
+    final allFiles = _collectAllFiles(_rootNode!);
+
+    showDialog(
+      context: context,
+      builder: (context) => GlobalSearchDialog(
+        root: _rootNode!,
+        files: allFiles,
+        onMatchSelected: (SearchMatch match) async {
+          Navigator.of(context).pop();
+
+          final file = FileNodeFile(match.fileName, match.filePath);
+          await _openFile(file);
+
+          // Best-effort jump to match in Monaco (waits for model/value to be ready).
+          await _revealMatchInEditor(match);
+        },
+      ),
+    );
+  }
+
+  Future<void> _revealMatchInEditor(SearchMatch match) async {
+    final controller = _editorController;
+    if (controller == null) return;
+
+    // Ensure Monaco reports ready (webview loaded + editor created).
+    await controller.onReady;
+
+    final line = match.lineNumber;
+    final startCol = match.matchStartColumn;
+    final endCol = match.matchStartColumn + match.matchLength;
+
+    // Wait until Monaco model is ready (lineCount > 0). This is the real race on macOS.
+    int lineCount = 0;
+    for (int i = 0; i < 30; i++) {
+      await controller.layout();
+      await controller.ensureEditorFocus(attempts: 1);
+      lineCount = await controller.getLineCount(defaultValue: 0);
+      if (lineCount > 0) break;
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+    }
+    if (lineCount <= 0) return;
+
+    final safeLine = line.clamp(1, lineCount);
+
+    final lineText = await controller.getLineContent(safeLine, defaultValue: '');
+    final maxCol = (lineText.length + 1).clamp(1, 1 << 30);
+    final safeStart = startCol.clamp(1, maxCol);
+    final safeEnd = endCol.clamp(safeStart, maxCol);
+
+    // IMPORTANT: Range in flutter_monaco uses startLine/endLine (not startLineNumber).
+    final range = Range(
+      startLine: safeLine,
+      startColumn: safeStart,
+      endLine: safeLine,
+      endColumn: safeEnd,
+    );
+
+    await controller.setSelection(range);
+    await controller.revealRange(range, center: true);
+    await controller.ensureEditorFocus(attempts: 3);
   }
 
   Future<void> _pickDirectory() async {
@@ -887,6 +964,11 @@ class _EditorScreenState extends State<EditorScreen> {
           ),
 
           // Actions
+          if (_rootNode != null)
+            SearchButton(
+              onPressed: _showGlobalSearch,
+            ),
+
           if (_rootNode != null)
             IconButton(
               icon: const Icon(Icons.play_arrow, color: Colors.green, size: 20),

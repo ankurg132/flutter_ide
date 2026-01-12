@@ -70,6 +70,23 @@ class GitService {
     );
   }
 
+  Future<GitServiceResult> getFileDiff(
+      String workingDirectory,
+      String path, {
+        int contextLines = 0,
+        bool staged = false,
+      }) {
+    // \-\-no-color prevents ANSI codes; \-U0 gives only changed lines (no context).
+    final baseArgs = <String>[
+      'diff',
+      '--no-color',
+      '-U$contextLines',
+    ];
+    if (staged) baseArgs.insert(1, '--cached');
+
+    return _run(workingDirectory, [...baseArgs, '--', path]);
+  }
+
   Future<bool> isGitRepo(String workingDirectory) async {
     final res = await _run(
       workingDirectory,

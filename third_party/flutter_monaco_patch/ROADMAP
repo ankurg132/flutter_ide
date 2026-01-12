@@ -1,0 +1,191 @@
+Short answer: **stick with “file:// + blob workers” for now, fix your CSP, and switch from `getWorkerUrl` to `getWorker` on iOS/macOS.** Then, as a long‑term improvement, add a native `WKURLSchemeHandler` (macOS/iOS) and an optional tiny localhost server for dev.
+
+Below is a concrete plan tailored to your codebase—with drop‑in patches you can apply right away.
+
+---
+
+## Why you’re seeing the warning
+
+* You already inject a WKWebView worker shim in `monaco_assets.dart` that returns a **blob URL** from `getWorkerUrl(...)`.
+* However, your current **CSP** disallows the worker’s `importScripts('file:///...')` network fetch because **`connect-src` is missing `file:`**. Safari/WKWebView treats `importScripts` as a network request governed by `connect-src`.
+* Also, returning a *URL string* via `getWorkerUrl` leaves a few footguns on Safari. In practice, **returning a `Worker` instance** via `getWorker(...)` is more robust across WKWebView versions.
+
+Result: creation of workers fails → Monaco falls back to executing worker code on the main thread → the warning.
+
+---
+
+## Minimal, safe fixes (now)
+
+### 1) Widen your CSP for workers
+
+In `MonacoAssets._generateIndexHtml(...)`, change your CSP meta to:
+
+* add `blob:` to `script-src` (the worker’s bootstrap is a blob script),
+* add `file:` to `connect-src` (so `importScripts('file:///...')` is allowed).
+
+**Before (yours):**
+
+```html
+content="default-src 'self' file: 'unsafe-inline' 'unsafe-eval';
+         script-src 'self' file: 'unsafe-inline' 'unsafe-eval';
+         style-src 'self' 'unsafe-inline'${allowCdnFonts ? ' https:' : ''};
+         font-src 'self' file: data:${allowCdnFonts ? ' https:' : ''};
+         img-src 'self' data: blob: file:;
+         worker-src 'self' blob:;
+         connect-src 'self' blob:;"
+```
+
+**After (recommended):**
+
+```html
+content="default-src 'self' file: 'unsafe-inline' 'unsafe-eval';
+         script-src 'self' file: blob: 'unsafe-inline' 'unsafe-eval';
+         style-src 'self' 'unsafe-inline'${allowCdnFonts ? ' https:' : ''};
+         font-src 'self' file: data:${allowCdnFonts ? ' https:' : ''};
+         img-src 'self' data: blob: file:;
+         worker-src 'self' blob:;
+         connect-src 'self' blob: file:;"
+```
+
+> These two additions (`blob:` in `script-src` and `file:` in `connect-src`) are the usual missing pieces when Safari refuses to spin up blob workers that later `importScripts` from `file://`.
+
+---
+
+### 2) Use `getWorker(...)` instead of `getWorkerUrl(...)` on iOS/macOS
+
+Replace the platform script you inject for `Platform.isIOS || Platform.isMacOS` with a **`getWorker`** version. This bypasses Monaco’s URL parsing code-path entirely and has proven to be the least brittle option on WKWebView.
+
+**Patch for `monaco_assets.dart` → `_generateIndexHtml()` (iOS/macOS branch):**
+
+```diff
+-    // iOS and macOS need blob worker shim for WKWebView + file:// protocol
+-    platformScript = '''
+-<script>
+-  (function () {
+-    console.log('[Init] Setting up worker shim for WKWebView');
+-    const vsRel = '$vsPath'; // e.g., "min/vs"
+-    let absVs;
+-    try { absVs = new URL(vsRel, window.location.href).toString(); }
+-    catch (_) { absVs = vsRel; }
+-
+-    // Ensure baseUrl points to the ".../min/" folder (not ".../min/vs")
+-    const idx = absVs.lastIndexOf('/vs');
+-    const baseUrl = idx >= 0 ? absVs.substring(0, idx + 1) : absVs; // e.g., ".../min/"
+-
+-    // Set baseUrl so Monaco can resolve URLs before workers start
+-    self.MonacoEnvironment = {
+-      baseUrl: baseUrl,
+-      getWorkerUrl: function (moduleId, label) {
+-        // Include the label for better worker resolution and debugging
+-        const src =
+-          "self.MonacoEnvironment = { baseUrl: '" + baseUrl + "' };\n" +
+-          "self.monacoLabel = '" + label + "';\n" +
+-          "importScripts('" + absVs + "/base/worker/workerMain.js');\n";
+-        return URL.createObjectURL(new Blob([src], { type: 'application/javascript' }));
+-      }
+-    };
+-    console.log('[Init] Worker shim configured. baseUrl=' + baseUrl);
+-  })();
+-</script>
+-''';
++    // iOS and macOS: robust blob-worker shim using getWorker (not getWorkerUrl)
++    platformScript = '''
++<script>
++  (function () {
++    console.log('[Init] Setting up worker shim for WKWebView');
++    const VS_REL = '$vsPath'; // usually "min/vs"
++    let VS_ABS;
++    try { VS_ABS = new URL(VS_REL, window.location.href).toString().replace(/\\/$/, ''); }
++    catch (_) { VS_ABS = VS_REL; }
++
++    // baseUrl must point to ".../min/" (one level up from ".../min/vs")
++    const BASE_URL = VS_ABS.replace(/\\/vs$/, '/') ;
++
++    self.MonacoEnvironment = {
++      baseUrl: BASE_URL,
++      getWorker: function (moduleId, label) {
++        const bootstrap =
++          "self.MonacoEnvironment = { baseUrl: '" + BASE_URL + "' };\\n" +
++          "self.MONACO_LABEL = '" + (label || '') + "';\\n" +
++          "importScripts('" + VS_ABS + "/base/worker/workerMain.js');\\n";
++        const blob = new Blob([bootstrap], { type: 'application/javascript' });
++        return new Worker(URL.createObjectURL(blob), { name: label });
++      }
++    };
++    console.log('[Init] Worker shim configured. baseUrl=' + BASE_URL);
++  })();
++</script>
++''';
+```
+
+**Why this helps**
+
+* `getWorker(...)` returns an actual `Worker` object; Monaco won’t try to parse a URL against a possibly `null` base.
+* The worker bootstrap sets `MonacoEnvironment.baseUrl` **inside the worker** too and loads `workerMain.js` with an absolute **`file:///.../min/vs/...`** URL.
+* With the CSP tweak, Safari now allows that `importScripts` call.
+
+---
+
+### 3) (Optional) Set `baseUrl` everywhere for consistency
+
+For Windows/Linux you can also set `MonacoEnvironment.baseUrl` early (harmless and sometimes useful for relative resolves):
+
+```diff
+-    } else {
+-      // Linux and other platforms: just set baseUrl
+-      final baseUrl = vsPath.replaceAll('/vs', '/');
+-      platformScript = '''
++    } else {
++      // Linux/Other (and OK for Windows if you want consistency): set baseUrl
++      final baseUrl = vsPath.replaceAll('/vs', '/');
++      platformScript = '''
+ <script>
+   // Linux/Other: Set Monaco base URL for worker/resource resolution
+   console.log('[Init] Setting Monaco base URL');
+   self.MonacoEnvironment = { baseUrl: '$baseUrl' };
+ </script>
+ ''';
+```
+
+(Windows generally works from `file://` without extra help, but it doesn’t hurt.)
+
+---
+
+## Smoke test (what you should see)
+
+* The two console warnings disappear:
+
+  * `Could not create web worker(s)...`
+  * `"...workerMain.js#editorWorkerService" cannot be parsed as a URL against "null".`
+* Tokenization and heavy IntelliSense feel smoother (no main‑thread jank).
+* In the console, you’ll see your `[Init] Worker shim configured...` log but **no fallback** messages from Monaco.
+
+---
+
+## Longer‑term improvements (nice to have)
+
+1. **`WKURLSchemeHandler` (macOS/iOS):**
+   Serve `vs/` from a custom origin (e.g., `monaco://vs/...`) and set:
+
+   ```js
+   self.MonacoEnvironment = { baseUrl: 'monaco:///' };
+   ```
+
+   Workers can then load `monaco:///vs/base/worker/workerMain.js` as same‑origin.
+   *Pros:* no blobs, best performance, clean URLs.
+   *Cons:* small amount of native code in the plugin.
+
+2. **Tiny local HTTP server (dev‑only mode):**
+   Use `package:shelf` + `shelf_static` to serve the extracted `min/vs` folder on `127.0.0.1:<port>` and load `http://127.0.0.1:<port>/index.html`.
+   *Pros:* dead simple; avoids file:// quirks.
+   *Cons:* ATS exceptions on iOS, less ideal for a packaged desktop app.
+
+If you want, I can sketch the `WKURLSchemeHandler` registration (Obj‑C/Swift) and the Dart side to flip between **`file://` (default)**, **`scheme://` (best for Apple)**, and **`http://127.0.0.1` (dev)** with a single enum in your plugin options.
+
+---
+
+## TL;DR recommendation
+
+* **Do now:** update CSP (`script-src` add `blob:`, `connect-src` add `file:`) and switch the WKWebView shim to **`getWorker`**.
+* **Do next:** add a `WKURLSchemeHandler` path as the **premium solution** for macOS/iOS; keep the blob‑worker path as a fallback.
+* **Optional (dev):** add a tiny localhost server toggle.

@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'package:flutter/foundation.dart';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart' as p;
@@ -55,7 +54,15 @@ class FileServiceImpl implements FileService {
 
   @override
   Future<String?> readFile(FileNodeFile file) async {
-    return File(file.path).readAsString();
+    try {
+      // Try fast path.
+      return await File(file.path).readAsString();
+    } on FileSystemException {
+      // Likely binary/non-UTF8 file (e.g. png). Skip for text searches.
+      return null;
+    } catch (_) {
+      return null;
+    }
   }
 
   @override
